@@ -1,0 +1,66 @@
+{
+  "build_dir": "build",
+  "build_name_prefix": "program",
+  "version": {
+    "major": 1,
+    "minor": 0,
+    "build_number": 0,
+    "increment_build_number": false
+  },
+  "features": {
+    "debug": true,
+    "optimization": "O2"
+  },
+  "architectures": {
+    "arm64": {
+      "toolchain": {
+        "tool": "aarch64-none-elf-"
+      },
+      "cflags": "-O2 -mcpu=cortex-a72 -march=armv8-a -Wall -Wextra -MMD -MP -ffunction-sections -fdata-sections  ",
+      "ldflags": "-Wl,--gc-sections,--print-memory-usage",
+      "env": {
+        "PATH": ""
+      }
+    },
+    "arm32": {
+      "toolchain": {
+        "tool": "arm-none-eabi-"
+      },
+      "cflags": "-O2 -mcpu=cortex-m4 -mthumb -Wall -Wextra -MMD -MP -ffunction-sections -fdata-sections  ",
+      "ldflags": "-Wl,--gc-sections,--print-memory-usage",
+      "env": {
+        "PATH": ""
+      }
+    },
+    "riscv64": {
+      "toolchain": {
+        "tool": "riscv64-unknown-elf-"
+      },
+      "cflags": "-O2 -march=rv64imafdc -mabi=lp64d -Wall -Wextra -MMD -MP -ffunction-sections -fdata-sections  ",
+      "ldflags": "-Wl,--gc-sections,--print-memory-usage",
+      "env": {
+        "PATH": ""
+      }
+    },
+    "riscv32": {
+      "toolchain": {
+        "tool": "riscv64-unknown-elf-"
+      },
+      "cflags": "-Wall -Wextra  -O2 -g -march=rv32imafc -mabi=ilp32f -ffreestanding -nostdlib -std=c11 -MMD -MP -ffunction-sections -fdata-sections",
+      "ldflags": "-march=rv32imafc -mabi=ilp32f -Wl,--gc-sections,--print-memory-usage",
+      "env": {
+        "PATH": ""
+      }
+    },
+    "local": {
+      "toolchain": {
+        "tool": ""
+      },
+      "cflags": "-O2 -Wall -Wextra -MMD -MP -ffunction-sections -fdata-sections  -MF $(@:.o=.d)",
+      "ldflags": "-Wl,--gc-sections,--print-memory-usage",
+      "env": {
+        "PATH": ""
+      }
+    }
+  }
+}

@@ -1,183 +1,241 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Function to check if jq is installed
-check_and_install_jq() {
-    if ! command -v jq &> /dev/null; then
-        echo "jq is not installed. Installing jq..."
-        if [ "$(uname)" == "Linux" ]; then
-            if [ -f /etc/debian_version ]; then
-                sudo apt-get update && sudo apt-get install -y jq
-            elif [ -f /etc/redhat-release ]; then
-                sudo yum install -y epel-release && sudo yum install -y jq
-            elif [ -f /etc/arch-release ]; then
-                sudo pacman -Sy jq
-            elif [ -f /etc/gentoo-release ]; then
-                sudo emerge dev-util/jq
-            fi
-        elif [ "$(uname)" == "Darwin" ]; then
-            brew install jq
-        elif [ "$(uname)" == "FreeBSD" ]; then
-            sudo pkg install jq
-        else
-            echo "Unsupported OS. Please install jq manually."
-            exit 1
-        fi
-    fi
+# -----------------------------
+# Global variables
+# -----------------------------
+ARCH_TARGET=""
+VERBOSE=0
+DRYRUN=0
+JSONLOG=0
+CLEAN=0
+INC_VERSION=0
+CONFIG_FILE="./config/config.json"
+
+# -----------------------------
+# Utility functions
+# -----------------------------
+timestamp() {
+    date -Iseconds
 }
 
-# Function to check if make is installed
-check_make() {
-    if ! command -v make &> /dev/null; then
-        echo "Error: make is not installed. Please install it and try again."
-        exit 1
-    fi
+usage() {
+    cat <<EOF
+Usage: $0 -t <target> [options]
+
+Options:
+  -t, --target <name>   Build target (required)
+  -c, --clean           Clean before building
+  --inc                 Increment build number after successful build
+  -v, --verbose         Enable verbose output
+  --dry-run             Show actions without executing them
+  --json-log            Output logs in JSON format
+  -h, --help            Show this help message
+EOF
 }
 
-# Check and install jq if necessary
-check_and_install_jq
-
-# Check if make is installed
-check_make
-
-# Function to display help message
-display_help() {
-    echo "Usage: $0 [-b <architecture> <build_type>] [-c [<architecture>]] [-h]"
-    echo
-    echo "Options:"
-    echo "  -b <architecture> <build_type>    Build the project for the specified architecture and build type."
-    echo "  -c [<architecture>]               Clean the build directory or specific architecture subdirectory."
-    echo "  -h                                Display this help message."
-    echo
-    echo "Architectures:"
-    echo "  arm64, arm32, riscv64, riscv32, local"
-    echo
-    echo "Build Types:"
-    echo "  release, debug"
-    exit 0
-}
-
-# Function to clean the build directory
-clean_build() {
-    CONFIG_FILE="config.json"
-    TARGET_DIR=$(jq -r ".build_dir" $CONFIG_FILE)/$(ARCH)
-    ARCH=$1
-    if [ -z "$ARCH" ]; then
-        echo "Cleaning entire build directory: $(TARGET_DIR)"
-        rm -rf $(TARGET_DIR)
-        echo "Clean complete."
+log() {
+    if [[ $JSONLOG -eq 1 ]]; then
+        json_log "info" "$1"
     else
-        echo "Cleaning build directory for architecture: $ARCH"
-        rm -rf $(TARGET_DIR)
-        echo "Clean complete for architecture: $ARCH"
+        echo "[LOG] $1"
     fi
 }
 
-# Function to build the project
-build_project() {
-    ARCH=$1
-    BUILD_TYPE=$2
+dry() {
+    if [[ $JSONLOG -eq 1 ]]; then
+        json_log "dryrun" "$1"
+    else
+        echo "[DRY-RUN] $1"
+    fi
+}
 
-    if [ -z "$ARCH" ] || [ -z "$BUILD_TYPE" ]; then
-        echo "Usage: $0 -b <architecture> <build_type>"
+json_log() {
+    local level="$1"
+    local msg="$2"
+    local ts
+    ts=$(timestamp)
+
+    printf '{"timestamp":"%s","level":"%s","target":"%s","message":"%s"}\n' \
+        "$ts" "$level" "$ARCH_TARGET" "$msg"
+}
+
+run() {
+    local cmd="$*"
+
+    if [[ $DRYRUN -eq 1 ]]; then
+        dry "Would run: $cmd"
+    else
+        if [[ $JSONLOG -eq 1 ]]; then
+            json_log "exec" "Running: $cmd"
+        else
+            [[ $VERBOSE -eq 1 ]] && echo "[EXEC] $cmd"
+        fi
+        eval "$cmd"
+    fi
+}
+
+# -----------------------------
+# Auto-increment build number
+# -----------------------------
+increment_build_number() {
+    local current
+    current=$(jq -r ".version.build_number" "$CONFIG_FILE")
+    local next=$((current + 1))
+
+    jq ".version.build_number = $next" "$CONFIG_FILE" > "$CONFIG_FILE.tmp"
+    mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+
+    log "Incremented build number: $current → $next"
+}
+
+# -----------------------------
+# Clean pipeline
+# -----------------------------
+clean_pipeline() {
+    log "Cleaning build artifacts for target: $ARCH_TARGET"
+
+    local build_dir
+    build_dir=$(jq -r ".build_dir" "$CONFIG_FILE")
+
+    export BUILD_DIR="$build_dir"
+    export ARCH="$ARCH_TARGET"
+
+    run "make clean"
+}
+
+# -----------------------------
+# Build pipeline
+# -----------------------------
+build_pipeline() {
+    log "Loading configuration for target: $ARCH_TARGET"
+
+    local arch_json
+    arch_json=$(jq -r ".architectures.\"$ARCH_TARGET\"" "$CONFIG_FILE")
+
+    local tool
+    tool=$(echo "$arch_json" | jq -r ".toolchain.tool")
+
+    local cflags ldflags
+    cflags=$(echo "$arch_json" | jq -r ".cflags")
+    ldflags=$(echo "$arch_json" | jq -r ".ldflags")
+
+    local build_dir build_name_prefix
+    build_dir=$(jq -r ".build_dir" "$CONFIG_FILE")
+    build_name_prefix=$(jq -r ".build_name_prefix" "$CONFIG_FILE")
+
+    local major minor build
+    major=$(jq -r ".version.major" "$CONFIG_FILE")
+    minor=$(jq -r ".version.minor" "$CONFIG_FILE")
+    build=$(jq -r ".version.build_number" "$CONFIG_FILE")
+
+    local build_target_name
+    build_target_name="${build_name_prefix}_${ARCH_TARGET}_v${major}.${minor}.${build}"
+
+    export CC="${tool}gcc"
+    export AS="${tool}as"
+    export SIZE="${tool}size"
+    export CFLAGS="$cflags"
+    export LDFLAGS="$ldflags"
+    export BUILD_DIR="$build_dir"
+    export ARCH="$ARCH_TARGET"
+    export TARGET="$build_target_name"
+
+    log "Toolchain prefix: $tool"
+    log "CFLAGS: $CFLAGS"
+    log "LDFLAGS: $LDFLAGS"
+    log "BUILD_DIR: $BUILD_DIR"
+    log "ARCH: $ARCH_TARGET"
+    log "TARGET: $TARGET"
+
+    run "make"
+    READELF=${tool}readelf
+    $READELF -l -S $BUILD_DIR/$ARCH/$TARGET
+}
+
+# -----------------------------
+# Argument parsing
+# -----------------------------
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -t|--target)
+                ARCH_TARGET="$2"
+                shift 2
+                ;;
+            -c|--clean)
+                CLEAN=1
+                shift
+                ;;
+            --inc)
+                INC_VERSION=1
+                shift
+                ;;
+            -v|--verbose)
+                VERBOSE=1
+                shift
+                ;;
+            --dry-run)
+                DRYRUN=1
+                shift
+                ;;
+            --json-log)
+                JSONLOG=1
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                usage
+                exit 1
+                ;;
+        esac
+    done
+}
+
+# -----------------------------
+# Main function (Python style)
+# -----------------------------
+main() {
+    parse_args "$@"
+
+    if [[ -z "$ARCH_TARGET" ]]; then
+        echo "Error: -t <target> is required" >&2
+        usage
         exit 1
     fi
 
-    # Read JSON configuration
-    CONFIG_FILE="config.json"
-    TARGET_DIR=$(jq -r ".build_dir" $CONFIG_FILE)/$(ARCH)
-    TARGET_NAME=$(jq -r ".target_name" $CONFIG_FILE)
-    MAJOR_VERSION=$(jq -r ".version.major" $CONFIG_FILE)
-    MINOR_VERSION=$(jq -r ".version.minor" $CONFIG_FILE)
-    BUILD_NUMBER=$(jq -r ".version.build_number" $CONFIG_FILE)
-    INCREMENT_BUILD_NUMBER=$(jq -r ".version.increment_build_number" $CONFIG_FILE)
-    DEBUG=$(jq -r ".features.debug" $CONFIG_FILE)
-    OPTIMIZATION=$(jq -r ".features.optimization" $CONFIG_FILE)
-    CC=$(jq -r ".architectures[\"$ARCH\"].toolchain.CC" $CONFIG_FILE)
-    AS=$(jq -r ".architectures[\"$ARCH\"].toolchain.AS" $CONFIG_FILE)
-    SIZE=$(jq -r ".architectures[\"$ARCH\"].toolchain.SIZE" $CONFIG_FILE)
-    CFLAGS=$(jq -r ".architectures[\"$ARCH\"].cflags" $CONFIG_FILE)
-    LDFLAGS=$(jq -r ".architectures[\"$ARCH\"].ldflags" $CONFIG_FILE)
-    ENV_PATH=$(jq -r ".architectures[\"$ARCH\"].env.PATH" $CONFIG_FILE)
-
-    # Increment the build number if the flag is true
-    if [ "$INCREMENT_BUILD_NUMBER" = true ]; then
-        NEW_BUILD_NUMBER=$((BUILD_NUMBER + 1))
-        if [ $NEW_BUILD_NUMBER -gt 1000 ]; then
-            NEW_BUILD_NUMBER=0
-        fi
-
-        # Update the build number in the JSON file
-        jq ".version.build_number = $NEW_BUILD_NUMBER" $CONFIG_FILE > tmp.$$.json && mv tmp.$$.json $CONFIG_FILE
+    if ! jq -e ".architectures.\"$ARCH_TARGET\"" "$CONFIG_FILE" >/dev/null; then
+        echo "Error: Invalid target '$ARCH_TARGET'" >&2
+        echo "Available targets:" >&2
+        jq -r ".architectures | keys[]" "$CONFIG_FILE" >&2
+        usage
+        exit 1
     fi
 
-    # Construct the version variable
-    VERSION="${MAJOR_VERSION}.${MINOR_VERSION}.${BUILD_NUMBER}"
-
-    # Construct the target variable
-    TARGET="${TARGET_NAME}_${ARCH}_v${VERSION}"
-
-    # Export environment variables
-    export PATH=$ENV_PATH
-
-    # Include additional features in CFLAGS
-    if [ "$DEBUG" = "true" ]; then
-        CFLAGS="$CFLAGS -g"
-    fi
-    if [ -n "$OPTIMIZATION" ]; then
-        CFLAGS="$CFLAGS -$OPTIMIZATION"
+    if [[ $DRYRUN -eq 1 ]]; then
+        log "Dry-run mode enabled"
     fi
 
-    # Adjust CFLAGS and LDFLAGS based on build type
-    if [ "$BUILD_TYPE" = "release" ]; then
-        CFLAGS="$CFLAGS -O3"
-        LDFLAGS="$LDFLAGS -s"
-    elif [ "$BUILD_TYPE" = "debug" ]; then
-        CFLAGS="$CFLAGS -g -O0"
+    if [[ $JSONLOG -eq 1 ]]; then
+        json_log "info" "JSON log mode enabled"
     fi
 
-    # Invoke the Makefile
-    make TARGET_DIR=$TARGET_DIR ARCH=$ARCH BUILD_TYPE=$BUILD_TYPE CC=$CC AS=$AS SIZE=$SIZE CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" TARGET=$TARGET
+    if [[ $CLEAN -eq 1 ]]; then
+        clean_pipeline
+    fi
+
+    build_pipeline
+
+    if [[ $INC_VERSION -eq 1 && $DRYRUN -eq 0 ]]; then
+        increment_build_number
+    fi
 }
 
-# Parse command line options
-CLEAN_ARCH=""
-while getopts "b:c:h" opt; do
-    case ${opt} in
-        b)
-            ARCH=$OPTARG
-            BUILD_TYPE=$3
-            if [ -z "$ARCH" ] || [ -z "$BUILD_TYPE" ]; then
-                echo "Usage: $0 -b <architecture> <build_type>"
-                exit 1
-            fi
-            BUILD=true
-            ;;
-        c)
-            CLEAN=true
-            if [ -n "$OPTARG" ]; then
-                CLEAN_ARCH=$OPTARG
-            fi
-            ;;
-        h)
-            display_help
-            ;;
-        *)
-            display_help
-            ;;
-    esac
-done
-
-shift $((OPTIND - 1))
-
-# Execute based on options
-if [ "$CLEAN" = true ]; then
-    clean_build $CLEAN_ARCH
-fi
-if [ "$BUILD" = true ]; then
-    build_project $ARCH $BUILD_TYPE
-fi
-
-# Display help if no valid option provided
-if [ -z "$BUILD" ] && [ -z "$CLEAN" ]; then
-    display_help
-fi
+# -----------------------------
+# Entry point
+# -----------------------------
+main "$@"

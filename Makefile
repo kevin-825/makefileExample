@@ -28,6 +28,8 @@ $(info  ASM_SRCS:$(ASM_SRCS))
 $(info  DEPS:$(DEPS))
 # Compiler and linker flags
 CFLAGS := $(CFLAGS) $(foreach dir, $(INC_DIR), -I$(dir))
+CFLAGS += -MMD -MP
+
 LDFLAGS := $(LDFLAGS)
 
 # Create build directories
@@ -43,6 +45,7 @@ $(TARGET_DIR)/%.o: %.s | $(TARGET_DIR)
 # Link objects to create target
 $(TARGET): $(OBJS)
 	$(CC) $(OBJS) $(LDFLAGS) -o $(TARGET_DIR)/$(TARGET)
+	$(SIZE) $(TARGET_DIR)/$(TARGET)
 
 clean:
 	rm -rf $(TARGET_DIR)
